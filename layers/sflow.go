@@ -72,9 +72,9 @@ that's why they're there. */
 package layers
 
 import (
+	"code.google.com/p/gopacket"
 	"encoding/binary"
 	"fmt"
-	"github.com/google/gopacket"
 	"net"
 )
 
@@ -123,6 +123,7 @@ func decodeSFlow(data []byte, p gopacket.PacketBuilder) error {
 	s := &SFlowDatagram{}
 	err := s.DecodeFromBytes(data, p)
 	if err != nil {
+		//fmt.Println(err.Error())
 		return err
 	}
 	p.AddLayer(s)
@@ -456,9 +457,11 @@ func decodeFlowSample(data *[]byte) (SFlowFlowSample, error) {
 				return s, err
 			}
 		case SFlowTypeEthernetFrameFlow:
-			// TODO
-			skipRecord(data)
-			return s, fmt.Errorf("skipping TypeEthernetFrameFlow")
+			if record, err := decodeEthernetFrameFlowRecord(data); err == nil {
+				s.Records = append(s.Records, record)
+			} else {
+				return s, err
+			}
 		case SFlowTypeIpv4Flow:
 			// TODO
 			skipRecord(data)
@@ -563,6 +566,7 @@ const (
 	SFlowType100BaseVGInterfaceCounters SFlowCounterRecordType = 4
 	SFlowTypeVLANCounters               SFlowCounterRecordType = 5
 	SFlowTypeProcessorCounters          SFlowCounterRecordType = 1001
+	SFlowTypeHTTPCounters               SFlowCounterRecordType = 2201
 )
 
 func (cr SFlowCounterRecordType) String() string {
@@ -579,6 +583,8 @@ func (cr SFlowCounterRecordType) String() string {
 		return "VLAN Counters"
 	case SFlowTypeProcessorCounters:
 		return "Processor Counters"
+	case SFlowTypeHTTPCounters:
+		return "HTTP Counters"
 	default:
 		return ""
 
@@ -624,8 +630,17 @@ func decodeCounterSample(data *[]byte) (SFlowCounterSample, error) {
 			skipRecord(data)
 			return s, fmt.Errorf("skipping TypeVLANCounters")
 		case SFlowTypeProcessorCounters:
-			skipRecord(data)
-			return s, fmt.Errorf("skipping TypeProcessorCounters")
+			if record, err := decodeProcessorCounters(data); err == nil {
+				s.Records = append(s.Records, record)
+			} else {
+				return s, err
+			}
+		case SFlowTypeHTTPCounters:
+			if record, err := decodeHTTPCounters(data); err == nil {
+				s.Records = append(s.Records, record)
+			} else {
+				return s, err
+			}
 		default:
 			return s, fmt.Errorf("Invalid counter record type: %d", counterRecordType)
 		}
@@ -816,6 +831,29 @@ func decodeRawPacketFlowRecord(data *[]byte) (SFlowRawPacketFlowRecord, error) {
 	*data, header = (*data)[headerLenWithPadding:], (*data)[:headerLenWithPadding]
 	rec.Header = gopacket.NewPacket(header, LayerTypeEthernet, gopacket.Default)
 	return rec, nil
+}
+
+type SFlowEthernetFrameFlowRecord struct {
+	SFlowBaseFlowRecord
+	Length     uint32
+	SrcMAC     uint64
+	DstMAC     uint64
+	PacketType uint32
+}
+
+func decodeEthernetFrameFlowRecord(data *[]byte) (SFlowEthernetFrameFlowRecord, error) {
+	es := SFlowEthernetFrameFlowRecord{}
+	var fdf SFlowFlowDataFormat
+
+	*data, fdf = (*data)[4:], SFlowFlowDataFormat(binary.BigEndian.Uint32((*data)[:4]))
+	es.EnterpriseID, es.Format = fdf.decode()
+	*data, es.FlowDataLength = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+
+	*data, es.Length = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, es.SrcMAC = (*data)[8:], binary.BigEndian.Uint64((*data)[:8])>>16
+	*data, es.DstMAC = (*data)[8:], binary.BigEndian.Uint64((*data)[:8])>>16
+	*data, es.PacketType = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	return es, nil
 }
 
 // SFlowExtendedSwitchFlowRecord give additional information
@@ -1463,6 +1501,8 @@ func (bcr SFlowBaseCounterRecord) GetType() SFlowCounterRecordType {
 		return SFlowTypeVLANCounters
 	case SFlowTypeProcessorCounters:
 		return SFlowTypeProcessorCounters
+	case SFlowTypeHTTPCounters:
+		return SFlowTypeHTTPCounters
 
 	}
 	unrecognized := fmt.Sprint("Unrecognized counter record type:", bcr.Format)
@@ -1623,5 +1663,93 @@ func decodeEthernetCounters(data *[]byte) (SFlowEthernetCounters, error) {
 	*data, ec.FrameTooLongs = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
 	*data, ec.InternalMacReceiveErrors = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
 	*data, ec.SymbolErrors = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	return ec, nil
+}
+
+type SFlowProcessorCounters struct {
+	SFlowBaseCounterRecord
+	FiveSecCPU  uint32
+	OneMinCPU   uint32
+	FiveMinCPU  uint32
+	TotalMemory uint64
+	FreeMemory  uint64
+}
+
+func decodeProcessorCounters(data *[]byte) (SFlowProcessorCounters, error) {
+	ec := SFlowProcessorCounters{}
+	var cdf SFlowCounterDataFormat
+
+	*data, cdf = (*data)[4:], SFlowCounterDataFormat(binary.BigEndian.Uint32((*data)[:4]))
+	ec.EnterpriseID, ec.Format = cdf.decode()
+	*data, ec.FlowDataLength = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+
+	*data, ec.FiveSecCPU = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.OneMinCPU = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.FiveMinCPU = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.TotalMemory = (*data)[8:], binary.BigEndian.Uint64((*data)[:8])
+	*data, ec.FreeMemory = (*data)[8:], binary.BigEndian.Uint64((*data)[:8])
+	return ec, nil
+}
+
+/*
+  unsigned int method_option_count;
+  unsigned int method_get_count;
+  unsigned int method_head_count;
+  unsigned int method_post_count;
+  unsigned int method_put_count;
+  unsigned int method_delete_count;
+  unsigned int method_trace_count;
+  unsigned int method_connect_count;
+  unsigned int method_other_count;
+  unsigned int status_1XX_count;
+  unsigned int status_2XX_count;
+  unsigned int status_3XX_count;
+  unsigned int status_4XX_count;
+  unsigned int status_5XX_count;
+  unsigned int status_other_count;
+*/
+
+type SFlowHTTPCounters struct {
+	SFlowBaseCounterRecord
+	MethodOptionCount  uint32
+	MethodGetCount     uint32
+	MethodHeadCount    uint32
+	MethodPostCount    uint32
+	MethodPutCount     uint32
+	MethodDeleteCount  uint32
+	MethodTraceCount   uint32
+	MethodConnectCount uint32
+	MethodOtherCount   uint32
+	Status1XXCount     uint32
+	Status2XXCount     uint32
+	Status3XXCount     uint32
+	Status4XXCount     uint32
+	Status5XXCount     uint32
+	StatusOtherCount   uint32
+}
+
+func decodeHTTPCounters(data *[]byte) (SFlowHTTPCounters, error) {
+	ec := SFlowHTTPCounters{}
+	var cdf SFlowCounterDataFormat
+
+	*data, cdf = (*data)[4:], SFlowCounterDataFormat(binary.BigEndian.Uint32((*data)[:4]))
+	ec.EnterpriseID, ec.Format = cdf.decode()
+	*data, ec.FlowDataLength = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+
+	*data, ec.MethodOptionCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodGetCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodHeadCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodPostCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodPutCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodDeleteCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodTraceCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodConnectCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.MethodOtherCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.Status1XXCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.Status2XXCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.Status3XXCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.Status4XXCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.Status5XXCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	*data, ec.StatusOtherCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
 	return ec, nil
 }
