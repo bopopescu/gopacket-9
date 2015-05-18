@@ -91,8 +91,8 @@ type SFlowRecord interface {
 type SFlowDataSource int32
 
 func (sdc SFlowDataSource) decode() (SFlowSourceFormat, SFlowSourceValue) {
-	leftField := sdc >> 30
-	rightField := uint32(0x3FFFFFFF) & uint32(sdc)
+	leftField := sdc >> 24
+	rightField := uint32(0x00FFFFFF) & uint32(sdc)
 	return SFlowSourceFormat(leftField), SFlowSourceValue(rightField)
 }
 
@@ -600,8 +600,10 @@ func decodeCounterSample(data *[]byte) (SFlowCounterSample, error) {
 	s.EnterpriseID, s.Format = sdf.decode()
 	*data, s.SampleLength = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
 	*data, s.SequenceNumber = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
+	fmt.Printf("data: % x\n", (*data)[:4])
 	*data, sdc = (*data)[4:], SFlowDataSource(binary.BigEndian.Uint32((*data)[:4]))
 	s.SourceIDClass, s.SourceIDIndex = sdc.decode()
+	fmt.Printf("out : %d %d\n\n", s.SourceIDClass, s.SourceIDIndex)
 	*data, s.RecordCount = (*data)[4:], binary.BigEndian.Uint32((*data)[:4])
 
 	for i := uint32(0); i < s.RecordCount; i++ {
